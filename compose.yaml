@@ -1,0 +1,15 @@
+services:
+  pocket-id-docker-provider:
+    build: .
+    restart: unless-stopped
+    command: ["--once"] # safe dry-run; for ongoing reconciliation remove --once
+    environment:
+      POCKET_ID_URL: ${POCKET_ID_URL}
+      POCKET_ID_API_KEY: ${POCKET_ID_API_KEY}
+      POLL_INTERVAL: ${POLL_INTERVAL:-30s}
+    volumes:
+      # SECURITY: read-only bind mount does NOT restrict Docker API capabilities.
+      # Use a restricted socket proxy in production.
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: "0:0" # needed for many default Docker sockets; use scoped socket proxy instead
+    # To enable writes, replace command with ["--apply"] after reviewing dry-run.

@@ -1,0 +1,13 @@
+services:
+  pocket-id-docker-provider:
+    build: ..
+    restart: unless-stopped
+    command: ["--once"] # replace with ["--apply"] for continuous writes
+    environment:
+      POCKET_ID_URL: ${POCKET_ID_URL}
+      POCKET_ID_API_KEY: ${POCKET_ID_API_KEY}
+      POLL_INTERVAL: 30s
+    volumes:
+      # WARNING: direct Docker API access gives highly privileged access.
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: "0:0"

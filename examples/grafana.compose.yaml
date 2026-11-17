@@ -1,0 +1,10 @@
+services:
+  grafana:
+    image: grafana/grafana:latest
+    labels:
+      pocketid.enable: "true"
+      pocketid.mode: "oidc"
+      pocketid.client.id: "grafana"
+      pocketid.client.name: "Grafana"
+      pocketid.client.callback: "https://grafana.example.com/login/generic_oauth"
+      pocketid.groups: "admins,family"
