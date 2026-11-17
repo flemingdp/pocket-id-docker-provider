@@ -13,6 +13,25 @@
 
 **WARNING:** A `pocketid.mode=forwardauth` label is currently ignored. This service does **not** protect applications behind Traefik. Keep your existing authentication middleware in place.
 
+## Published Docker images
+
+GitHub Actions builds the image automatically for `linux/amd64` and `linux/arm64` and stores it in [GitHub Container Registry](https://github.com/flemingdp?tab=packages).
+
+```sh
+docker pull ghcr.io/flemingdp/pocket-id-docker-provider:latest
+```
+
+Tags:
+- `latest`: current `main` branch (development image)
+- `sha-<shortsha>`: commit-specific builds
+- `1.2.3`, `1.2`, `1`: generated from a release tag such as `v1.2.3`
+
+Pull requests are built but never pushed. To trigger manually, open **Actions → Publish Docker image → Run workflow**. Publishing uses the built-in `GITHUB_TOKEN`, with `packages: write`; no personal token is needed.
+
+**Package visibility:** GHCR packages may initially be private, even for public repositories. After the first successful publication, open the package under your GitHub profile → **Package settings → Change visibility → Public** if you want anonymous pulls. This action is separate from making the source repository public.
+
+The images are experimental; `forwardauth` is not yet implemented. Do not use this image as an authentication gateway for protected applications.
+
 ## Quick start
 
 Copy `.env.example` to `.env`, set `POCKET_ID_URL` and `POCKET_ID_API_KEY`, then:
