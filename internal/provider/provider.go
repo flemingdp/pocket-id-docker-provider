@@ -50,6 +50,16 @@ type Desired struct {
 	Groups []string
 	Source string
 }
+// Summary records reconciliation counts. Client counts describe metadata, not REST calls.
+type Summary struct {
+ ContainersScanned int `json:"containers_scanned"`
+ ClientsDiscovered int `json:"clients_discovered"`
+ ClientsCreated int `json:"clients_created"`
+ ClientsUpdated int `json:"clients_updated"`
+ ClientsUnchanged int `json:"clients_unchanged"`
+ InvalidLabels int `json:"invalid_labels"`
+ Errors int `json:"errors"`
+}
 type Provider struct {
 	cfg         Config
 	docker, api *http.Client
@@ -134,23 +144,27 @@ func parseLabels(c Container) (Desired, bool, error) {
 	sort.Strings(groups)
 	return Desired{Client: Client{ID: id, Name: name, CallbackURLs: []string{callback}, IsGroupRestricted: true, IsPublic: enabled(l["pocketid.client.public"]), PKCEEnabled: true}, Groups: groups, Source: c.ID}, true, nil
 }
-func (p *Provider) desired(ctx context.Context) ([]Desired, error) {
+func (p *Provider) desired(ctx context.Context) ([]Desired, Summary, error) {
 	cs, err := p.dockerContainers(ctx)
+ summary := Summary{ContainersScanned:len(cs)}
 	if err != nil {
-		return nil, err
+		return nil, summary, err
 	}
 	byID := map[string]Desired{}
 	for _, c := range cs {
 		d, ok, err := parseLabels(c)
 		if err != nil {
 			p.log.Error("invalid container labels", "container", c.ID, "error", err)
+ summary.InvalidLabels++
+ summary.Errors++
 			continue
 		}
 		if !ok {
 			continue
 		}
 		if existing, exists := byID[d.Client.ID]; exists {
-			return nil, fmt.Errorf("duplicate client %q on containers %s and %s", d.Client.ID, existing.Source, d.Source)
+			summary.Errors++
+ return nil, summary, fmt.Errorf("duplicate client %q on containers %s and %s", d.Client.ID, existing.Source, d.Source)
 		}
 		byID[d.Client.ID] = d
 	}
@@ -159,7 +173,8 @@ func (p *Provider) desired(ctx context.Context) ([]Desired, error) {
 		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Client.ID < out[j].Client.ID })
-	return out, nil
+	summary.ClientsDiscovered = len(out)
+ return out, summary, nil
 }
 func (p *Provider) request(ctx context.Context, method, path string, payload any, out any) error {
 	var body io.Reader
@@ -211,84 +226,74 @@ func listAll[T any](ctx context.Context, p *Provider, path string) ([]T, error) 
 	}
 	return nil, errors.New("pagination limit exceeded")
 }
+// Reconcile retains the error-only signature for existing callers.
 func (p *Provider) Reconcile(ctx context.Context) error {
-	desired, err := p.desired(ctx)
-	if err != nil {
-		return err
-	}
-	for _, d := range desired {
-		p.log.Info("discovered", "client", d.Client.ID, "callback", d.Client.CallbackURLs[0], "groups", d.Groups)
-	}
-	if !p.cfg.Apply {
-		p.log.Info("dry-run; use --apply to make changes", "count", len(desired))
-		return nil
-	}
-	if len(desired) == 0 {
-		return nil
-	}
-	clients, err := listAll[Client](ctx, p, "/api/oidc/clients")
-	if err != nil {
-		return err
-	}
-	groups, err := listAll[group](ctx, p, "/api/user-groups")
-	if err != nil {
-		return err
-	}
-	clientMap := map[string]Client{}
-	for _, c := range clients {
-		clientMap[c.ID] = c
-	}
-	groupMap := map[string]string{}
-	for _, g := range groups {
-		groupMap[g.Name] = g.ID
-	}
-	var errs []error
-	for _, d := range desired {
-		var ids []string
-		missing := false
-		for _, name := range d.Groups {
-			if id, ok := groupMap[name]; ok {
-				ids = append(ids, id)
-			} else {
-				p.log.Error("group not found; skipping client", "client", d.Client.ID, "group", name)
-				missing = true
-			}
-		}
-		if missing {
-			errs = append(errs, fmt.Errorf("%s: missing group", d.Client.ID))
-			continue
-		}
-		if previous, ok := clientMap[d.Client.ID]; ok {
-			// Patch only our managed fields, preserving other configuration.
-			payload := map[string]any{"name": d.Client.Name, "callbackURLs": d.Client.CallbackURLs, "isGroupRestricted": true}
-			if previous.Name != d.Client.Name || strings.Join(previous.CallbackURLs, "\x00") != strings.Join(d.Client.CallbackURLs, "\x00") || !previous.IsGroupRestricted {
-				err = p.request(ctx, "PATCH", "/api/oidc/clients/"+url.PathEscape(d.Client.ID), payload, nil)
-				if err != nil {
-					errs = append(errs, err)
-					continue
-				}
-				p.log.Info("updated client", "client", d.Client.ID)
-			}
-		} else {
-			var created map[string]any
-			if err = p.request(ctx, "POST", "/api/oidc/clients", d.Client, &created); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			// Never log returned createdSecret. Operator must handle client secret retrieval securely.
-			if s, ok := created["createdSecret"]; ok && s != nil {
-				p.log.Warn("new client secret returned by API but intentionally not stored; rotate/retrieve via secure administrative workflow", "client", d.Client.ID)
-			}
-			p.log.Info("created client", "client", d.Client.ID)
-		}
-		err = p.request(ctx, "PUT", "/api/oidc/clients/"+url.PathEscape(d.Client.ID)+"/allowed-user-groups", map[string]any{"userGroupIds": ids}, nil)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		p.log.Info("synchronized groups", "client", d.Client.ID)
-	}
-	return errors.Join(errs...)
+ _, err := p.ReconcileWithSummary(ctx)
+ return err
+}
+
+// ReconcileWithSummary reconciles clients and produces counts for structured logs.
+func (p *Provider) ReconcileWithSummary(ctx context.Context) (Summary,error) {
+ desired, summary, err := p.desired(ctx)
+ if err != nil { return summary,err }
+ for _, d := range desired {
+  p.log.Debug("discovered client","client",d.Client.ID,"callback",d.Client.CallbackURLs[0],"groups",d.Groups)
+ }
+ if !p.cfg.Apply {
+  p.log.Debug("dry-run; no Pocket ID writes","count",len(desired))
+  return summary,nil
+ }
+ if len(desired)==0 { return summary,nil }
+ clients,err := listAll[Client](ctx,p,"/api/oidc/clients")
+ if err != nil { summary.Errors++;return summary,err }
+ groups,err := listAll[group](ctx,p,"/api/user-groups")
+ if err != nil { summary.Errors++;return summary,err }
+ clientMap:=map[string]Client{}
+ for _,c:=range clients { clientMap[c.ID]=c }
+ groupMap:=map[string]string{}
+ for _,g:=range groups {groupMap[g.Name]=g.ID}
+ var errs []error
+ for _,d:=range desired {
+  ids:=[]string{}
+  missing:=false
+  for _,name:=range d.Groups {
+   if id,ok:=groupMap[name];ok {ids=append(ids,id)} else {
+    p.log.Error("group not found; skipping client","client",d.Client.ID,"group",name)
+    missing=true
+   }
+  }
+  if missing {
+   summary.Errors++
+   errs=append(errs,fmt.Errorf("%s: missing group",d.Client.ID))
+   continue
+  }
+  if previous,ok:=clientMap[d.Client.ID];ok {
+   payload:=map[string]any{"name":d.Client.Name,"callbackURLs":d.Client.CallbackURLs,"isGroupRestricted":true}
+   if previous.Name!=d.Client.Name || strings.Join(previous.CallbackURLs,"\x00")!=strings.Join(d.Client.CallbackURLs,"\x00") || !previous.IsGroupRestricted {
+    if err:=p.request(ctx,"PATCH","/api/oidc/clients/"+url.PathEscape(d.Client.ID),payload,nil);err!=nil {
+     summary.Errors++;errs=append(errs,fmt.Errorf("update %s: %w",d.Client.ID,err));continue
+    }
+    summary.ClientsUpdated++
+    p.log.Info("updated client","client",d.Client.ID)
+   } else {summary.ClientsUnchanged++}
+  } else {
+   var created map[string]any
+   if err:=p.request(ctx,"POST","/api/oidc/clients",d.Client,&created);err!=nil {
+    summary.Errors++;errs=append(errs,fmt.Errorf("create %s: %w",d.Client.ID,err));continue
+   }
+   if secret,ok:=created["createdSecret"];ok && secret!=nil {
+    p.log.Warn("new client secret returned by API but intentionally not stored; rotate/retrieve via secure administrative workflow","client",d.Client.ID)
+   }
+   summary.ClientsCreated++
+   p.log.Info("created client","client",d.Client.ID)
+  }
+  // Group membership PUT still happens on unchanged client metadata.
+  if err:=p.request(ctx,"PUT","/api/oidc/clients/"+url.PathEscape(d.Client.ID)+"/allowed-user-groups",map[string]any{"userGroupIds":ids},nil);err!=nil {
+   summary.Errors++;errs=append(errs,fmt.Errorf("synchronize groups for %s: %w",d.Client.ID,err));continue
+  }
+  p.log.Debug("synchronized groups","client",d.Client.ID)
+ }
+ return summary,errors.Join(errs...)
 }
 
 func IntervalFromEnv() time.Duration {

@@ -30,3 +30,10 @@ func TestForwardAuthIgnored(t *testing.T) {
 		t.Fatalf("forwardauth should not be enabled yet: %v", err)
 	}
 }
+
+func TestSummaryCountsInvalidLabels(t *testing.T) {
+ _,_,err:=parseLabels(Container{Labels:map[string]string{
+ "pocketid.enable":"true","pocketid.client.id":"broken","pocketid.groups":"admins",
+ }})
+ if err==nil {t.Fatal("expected validation failure")}
+}

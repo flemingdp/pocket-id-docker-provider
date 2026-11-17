@@ -58,6 +58,12 @@ labels:
 
 The named groups **must already exist** in Pocket ID. Clients without groups, unknown groups, and non-HTTPS callbacks are rejected. Container removal does not delete the associated client. The provider does not create users or groups.
 
+## Logging and observability
+
+Logs go to stdout and can be viewed using `docker compose logs -f` or `docker logs`. Default is structured JSON at INFO level. Set `LOG_FORMAT=json|text` and `LOG_LEVEL=debug|info|warn|error` in the container environment.
+
+Startup logs include dry-run/apply mode, interval and once setting. Reconciliation summaries include duration, containers scanned, clients discovered, created, updated, unchanged, invalid labels and errors. No-change cycles and per-client discoveries are DEBUG-only to reduce noise; failures remain ERROR. Invalid labels are reported but do not block valid clients. An 'unchanged' client may still have its allowed groups synchronized (via API PUT).
+
 ## Security considerations
 
 - Docker API socket access is privileged even when bind-mounted with `:ro`. Use a restricted Docker socket proxy in production.
